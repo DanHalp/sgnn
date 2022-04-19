@@ -5,16 +5,22 @@ import argparse
 import os, sys, time
 import shutil
 import random
+import tensorboard
 import torch
 import numpy as np
 import gc
-
 import data_util
 import scene_dataloader
 import model
 import loss as loss_util
+from torch.utils.tensorboard import SummaryWriter
+from pathlib import Path
 
 
+import gc
+gc.collect()
+
+torch.cuda.empty_cache()
 # python train.py --gpu 0 --data_path ./data/completion_blocks_2cm_hierarchy/release_64-64-128  --train_file_list train_list.txt --val_file_list val_list.txt --save logs/mp
 
 # params
@@ -24,7 +30,7 @@ parser.add_argument('--gpu', type=int, default=0, help='which gpu to use')
 parser.add_argument('--data_path', required=True, help='path to data')
 parser.add_argument('--train_file_list', required=True, help='path to file list of train data')
 parser.add_argument('--val_file_list', default='', help='path to file list of val data')
-parser.add_argument('--save', default='./logs', help='folder to output model checkpoints')
+parser.add_argument('--save', default='./output', help='folder to output model checkpoints')
 # model params
 parser.add_argument('--retrain', type=str, default='', help='model to load from')
 parser.add_argument('--input_dim', type=int, default=0, help='voxel dim.')
@@ -53,7 +59,8 @@ parser.add_argument('--vis_dfs', type=int, default=0, help='use df (iso 1) to vi
 parser.add_argument('--use_loss_masking', dest='use_loss_masking', action='store_true')
 parser.add_argument('--no_loss_masking', dest='use_loss_masking', action='store_false')
 parser.add_argument('--scheduler_step_size', type=int, default=0, help='#iters before scheduler step (0 for each epoch)')
-
+parser.add_argument("--logs_path", default="./output/tensorboard")
+parser.add_argument("--session_name", default="", help="Under what foler should stuff be saved?")
 parser.set_defaults(no_pass_occ=False, no_pass_feats=False, logweight_target_sdf=True, use_loss_masking=True)
 args = parser.parse_args()
 assert( not (args.no_pass_feats and args.no_pass_occ) )
@@ -89,7 +96,7 @@ last_epoch = -1 if not args.retrain else args.start_epoch - 1
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.decay_lr, gamma=0.5, last_epoch=last_epoch)
 
 # data files
-train_files, val_files = data_util.get_train_files(args.data_path, args.train_file_list, args.val_file_list)
+train_files, val_files = data_util.get_train_files(args.data_path, args.train_file_list, args.val_file_list, ".pcd")
 _OVERFIT = False
 if len(train_files) == 1:
     _OVERFIT = True
@@ -107,68 +114,50 @@ if len(val_files) > 0:
 
 _SPLITTER = ','
 
+
+
 def print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train_l1tgt, mean_train_ious, mean_val_losses, mean_val_l1pred, mean_val_l1tgt, mean_val_ious, time, log):
-    splitters = ['Epoch: ', ' iter: '] if log is None else ['', ',']
-    values = [epoch, iter]
+    splitters = []
+    values = []
     values.extend(mean_train_losses)
     for h in range(len(mean_train_losses)):
         id = 'total' if h == 0 else str(h-1)
         id = 'sdf' if h + 1 == len(mean_train_losses) else id
-        if log is None:
-            splitters.append(' loss_train(' + id + '): ')
-        else:
-            splitters.append(',')
+        splitters.append('loss_train(' + id + ')')
+     
     values.extend([mean_train_l1pred, mean_train_l1tgt])
-    if log is None:
-        splitters.extend([' train_l1pred: ', ' train_l1tgt: '])
-    else:
-        splitters.extend([',', ','])
+    splitters.extend(['train_l1pred', 'train_l1tgt'])
+    
     values.extend(mean_train_ious)
     for h in range(len(mean_train_ious)):
         id = str(h)
-        if log is None:
-            splitters.append(' iou_train(' + id + '): ')
-        else:
-            splitters.append(',')
+        splitters.append('iou_train(' + id + ')')
+        
     if mean_val_losses is not None:
         values.extend(mean_val_losses)
         for h in range(len(mean_val_losses)):
             id = 'total' if h == 0 else str(h-1)
             id = 'sdf' if h + 1 == len(mean_val_losses) else id
-            if log is None:
-                splitters.append(' loss_val(' + id + '): ')
-            else:
-                splitters.append(',')
+            splitters.append(f'loss_val({id})')
+
         values.extend([mean_val_l1pred, mean_val_l1tgt])
-        if log is None:
-            splitters.extend([' val_l1pred: ', ' val_l1tgt: '])
-        else:
-            splitters.extend([',', ','])
+        
+        splitters.extend(['val_l1pred', 'val_l1tgt'])
+        
         values.extend(mean_val_ious)
         for h in range(len(mean_val_ious)):
             id = str(h)
             if log is None:
-                splitters.append(' iou_val(' + id + '): ')
-            else:
-                splitters.append(',')
-    else:
-        splitters.extend([''] * (len(mean_train_losses) + len(mean_train_ious) + 2))
-        values.extend([''] * (len(mean_train_losses) + len(mean_train_ious) + 2))
+                splitters.append(f'iou_val({id})')
+                
     values.append(time)
-    if log is None:
-        splitters.append(' time: ')
-    else:
-        splitters.append(',')
-    info = ''
+    splitters.append('time')
+   
+    print(f"\n################ Epoch {epoch}, Iter {iter} ################\n")
     for k in range(len(splitters)):
-        if log is None and isinstance(values[k], float):
-           info += splitters[k] + '{:.6f}'.format(values[k])
-        else:
-           info += splitters[k] + str(values[k])
-    if log is None:
-        print(info, file=sys.stdout)
-    else:
-        print(info, file=log)
+        if values[k] != -1:
+            print(f"{splitters[k]}: {values[k]}")
+            writer.add_scalar(f"train/{splitters[k]}", values[k], global_step=iter)
 
 def print_log(log, epoch, iter, train_losses, train_l1preds, train_l1tgts, train_ious, val_losses, val_l1preds, val_l1tgts, val_ious, time):
     train_losses = np.array(train_losses)
@@ -193,12 +182,12 @@ def print_log(log, epoch, iter, train_losses, train_l1preds, train_l1tgts, train
         mean_val_l1tgt = -1 if (len(val_l1tgts) == 0 or np.all(val_l1tgts < 0))  else np.mean(val_l1tgts[val_l1tgts >= 0])
         mean_val_ious = [-1 if np.all(x < 0) else np.mean(x[x >= 0]) for x in val_ious]
         print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train_l1tgt, mean_train_ious, mean_val_losses, mean_val_l1pred, mean_val_l1tgt, mean_val_ious, time, None)
-        print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train_l1tgt, mean_train_ious, mean_val_losses, mean_val_l1pred, mean_val_l1tgt, mean_val_ious, time, log)
+        # print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train_l1tgt, mean_train_ious, mean_val_losses, mean_val_l1pred, mean_val_l1tgt, mean_val_ious, time, log)
     else:
         print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train_l1tgt, mean_train_ious, None, None, None, None, time, None)
-        print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train_l1tgt, mean_train_ious, None, None, None, None, time, log)
+        # print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train_l1tgt, mean_train_ious, None, None, None, None, time, log)
     log.flush()
-
+    
 
 def get_loss_weights(iter, num_hierarchy_levels, num_iters_per_level, factor_l1_loss):
     weights = np.zeros(num_hierarchy_levels+1, dtype=np.float32)
@@ -230,7 +219,47 @@ def get_loss_weights(iter, num_hierarchy_levels, num_iters_per_level, factor_l1_
         print('[iter %d] updating loss weights:' % iter, weights)
     return weights
 
+def sdf_to_occ(x, thresh=args.truncation):
+    """
+    # All voxels with a value lower than "thresh", are considered as surface
+    # Thresh is set to 2cm.
+    """
+
+    indices = torch.abs(x) < thresh
+    x[indices] = 1
+    x[~indices] = 0
+    
+def create_saving_folder():
+    
+    # Saving folder
+    save_folder = args.save
+    session_name = args.session_name
+    n_epoch = args.max_epoch
+    trunc = int(args.truncation)
+    
+    path = Path(save_folder) / "saved_models"
+         
+    if not session_name:
+        session_name = str(len(os.listdir(path)) + 1)
+    
+    session_name = f"{session_name}_epochs-{n_epoch}_trunc-{trunc}"
+    path = path / session_name
+    if path.exists():
+        shutil.rmtree(path)
+    os.makedirs(path)
+        
+    args.save = path
+    
+    # Tensorboard
+    args.logs_path = Path(args.logs_path) / session_name
+    if args.logs_path.exists():
+        shutil.rmtree(args.logs_path)
+        os.makedirs(args.logs_path)
+    
+    
 def train(epoch, iter, dataloader, log_file, output_save):
+    
+    
     train_losses = [ [] for i in range(args.num_hierarchy_levels+2) ]
     train_l1preds = []
     train_l1tgts = []
@@ -238,27 +267,38 @@ def train(epoch, iter, dataloader, log_file, output_save):
     model.train()
     start = time.time()
     
-    if args.scheduler_step_size == 0:
-        scheduler.step()
+    # if args.scheduler_step_size == 0:   # Old pytroch code
+    #     scheduler.step()
 
     num_batches = len(dataloader)
     for t, sample in enumerate(dataloader):
+        # TODO: Maybe these are what heirechy should we consider for the loss?????
         loss_weights = get_loss_weights(iter, args.num_hierarchy_levels, args.num_iters_per_level, args.weight_sdf_loss)
         if epoch == args.start_epoch and t == 0:
             print('[iter %d/epoch %d] loss_weights' % (iter, epoch), loss_weights)
 
-        sdfs = sample['sdf']
+        sdfs = sample['sdf'] # These are the targets of the supervised learning.
         if sdfs.shape[0] < args.batch_size:
-            continue  # maintain same batch size for training
+            continue  # maintain same batch size for training - could be also implemented with "skip_last"
         inputs = sample['input']
         known = sample['known']
         hierarchy = sample['hierarchy']
+        
         for h in range(len(hierarchy)):
             hierarchy[h] = hierarchy[h].cuda()
+        
+        # Create an occupancy grid. 
+        sdf_to_occ(inputs[1], thresh=args.truncation)
+        sdf_to_occ(sdfs, args.truncation)
+        for h in range(len(hierarchy)):
+            sdf_to_occ(hierarchy[h], args.truncation)
+        
         if args.use_loss_masking:
             known = known.cuda()
+            
         inputs[0] = inputs[0].cuda()
         inputs[1] = inputs[1].cuda()
+        
         target_for_sdf, target_for_occs, target_for_hier = loss_util.compute_targets(sdfs.cuda(), hierarchy, args.num_hierarchy_levels, args.truncation, args.use_loss_masking, known)
 
         optimizer.zero_grad()
@@ -296,28 +336,29 @@ def train(epoch, iter, dataloader, log_file, output_save):
             train_l1preds.append(loss_util.compute_l1_predsurf_sparse_dense(output_sdf[0], output_sdf[1], target_for_sdf, None, False, args.use_loss_masking, known).item())
             train_l1tgts.append(loss_util.compute_l1_tgtsurf_sparse_dense(output_sdf[0], output_sdf[1], target_for_sdf, args.truncation, args.use_loss_masking, known))
 
-        iter += 1
+        
         if args.scheduler_step_size > 0 and iter % args.scheduler_step_size == 0:
             scheduler.step()
         if iter % 20 == 0:
             took = time.time() - start
             print_log(log_file, epoch, iter, train_losses, train_l1preds, train_l1tgts, train_ious, None, None, None, None, took)
-        if iter % 2000 == 0:
-            torch.save({'epoch': epoch,'state_dict': model.state_dict(),'optimizer' : optimizer.state_dict()}, os.path.join(args.save, 'model-iter%s-epoch%s.pth' % (iter, epoch)))
-        if output_visual:
-            vis_pred_sdf = [None] * args.batch_size
-            if len(output_sdf[0]) > 0:
-                for b in range(args.batch_size):
-                    mask = output_sdf[0][:,-1] == b
-                    if len(mask) > 0:
-                        vis_pred_sdf[b] = [output_sdf[0][mask].cpu().numpy(), output_sdf[1][mask].squeeze().cpu().numpy()]
-            inputs = [inputs[0].cpu().numpy(), inputs[1].cpu().numpy()]
-            for h in range(args.num_hierarchy_levels):
-                for b in range(args.batch_size):
-                    if pred_occs[h][b] is not None:
-                        pred_occs[h][b] = pred_occs[h][b].cpu().numpy()
-            data_util.save_predictions(os.path.join(args.save, 'iter%d-epoch%d' % (iter, epoch), 'train'), sample['name'], inputs, target_for_sdf.cpu().numpy(), [x.cpu().numpy() for x in target_for_occs], vis_pred_sdf, pred_occs, sample['world2grid'].numpy(), args.vis_dfs, args.truncation)
-
+        if iter % 1000 == 0 and iter != 0:
+            torch.save({'epoch': epoch,'state_dict': model.state_dict(), 'optimizer' : optimizer.state_dict()}, os.path.join(args.save, 'model-iter%s-epoch%s.pth' % (iter, epoch)))
+        # if output_visual:
+        #     vis_pred_sdf = [None] * args.batch_size
+        #     if len(output_sdf[0]) > 0:
+        #         for b in range(args.batch_size):
+        #             mask = output_sdf[0][:,-1] == b
+        #             if len(mask) > 0:
+        #                 vis_pred_sdf[b] = [output_sdf[0][mask].cpu().numpy(), output_sdf[1][mask].squeeze().cpu().numpy()]
+        #     inputs = [inputs[0].cpu().numpy(), inputs[1].cpu().numpy()]
+        #     for h in range(args.num_hierarchy_levels):
+        #         for b in range(args.batch_size):
+        #             if pred_occs[h][b] is not None:
+        #                 pred_occs[h][b] = pred_occs[h][b].cpu().numpy()
+        #     data_util.save_predictions(os.path.join(args.save, 'iter%d-epoch%d' % (iter, epoch), 'train'), sample['name'], inputs, target_for_sdf.cpu().numpy(), [x.cpu().numpy() for x in target_for_occs], vis_pred_sdf, pred_occs, sample['world2grid'].numpy(), args.vis_dfs, args.truncation)
+        iter += 1
+        
     return train_losses, train_l1preds, train_l1tgts, train_ious, iter, loss_weights
 
 
@@ -376,7 +417,8 @@ def test(epoch, iter, loss_weights, dataloader, log_file, output_save):
             if loss_weights[-1] > 0 and t % 20 == 0:
                 val_l1preds.append(loss_util.compute_l1_predsurf_sparse_dense(output_sdf[0], output_sdf[1], target_for_sdf, None, False, args.use_loss_masking, known).item())
                 val_l1tgts.append(loss_util.compute_l1_tgtsurf_sparse_dense(output_sdf[0], output_sdf[1], target_for_sdf, args.truncation, args.use_loss_masking, known))
-            if output_visual:
+            if True: # TODO: return to previous version
+            # if output_visual:
                 vis_pred_sdf = [None] * args.batch_size
                 if len(output_sdf[0]) > 0:
                     for b in range(args.batch_size):
@@ -395,10 +437,13 @@ def test(epoch, iter, loss_weights, dataloader, log_file, output_save):
 
 
 def main():
-    if not os.path.exists(args.save):
-        os.makedirs(args.save)
-    elif not _OVERFIT:
-        raw_input('warning: save dir %s exists, press key to delete and continue' % args.save)
+    
+
+    # if not os.path.exists(args.save):
+    #     os.makedirs(args.save)
+    # TODO: Remove this:
+    # elif not _OVERFIT:
+    #     input('warning: save dir %s exists, press key to delete and continue' % args.save)
 
     data_util.dump_args_txt(args, os.path.join(args.save, 'args.txt'))
     log_file = open(os.path.join(args.save, 'log.csv'), 'w')
@@ -426,9 +471,12 @@ def main():
         log_file_val = open(os.path.join(args.save, 'log_val.csv'), 'w')
         log_file_val.write(_SPLITTER.join(headers) + '\n')
         log_file_val.flush()
+        
+        
     # start training
     print('starting training...')
-    iter = args.start_epoch * (len(train_dataset) // args.batch_size)
+    iter = args.start_epoch * (len(train_dataset) // args.batch_size) 
+    # iter = iter if iter > 0 else 1
     for epoch in range(args.start_epoch, args.max_epoch):
         start = time.time()
 
@@ -441,7 +489,8 @@ def main():
             print_log(log_file_val, epoch, iter, train_losses, train_l1preds, train_l1tgts, train_ious, val_losses, val_l1preds, val_l1tgts, val_ious, took)
         else:
             print_log(log_file, epoch, iter, train_losses, train_l1preds, train_l1tgts, train_ious, None, None, None, None, took)
-        torch.save({'epoch': epoch + 1,'state_dict': model.state_dict(),'optimizer' : optimizer.state_dict()}, os.path.join(args.save, 'model-epoch-%s.pth' % epoch))
+        if epoch % args.save_epoch == 0:
+            torch.save({'epoch': epoch + 1,'state_dict': model.state_dict(),'optimizer' : optimizer.state_dict()}, os.path.join(args.save, 'model-epoch-%s.pth' % epoch))
     log_file.close()
     if has_val:
         log_file_val.close()
@@ -449,6 +498,11 @@ def main():
 
 
 if __name__ == '__main__':
+    
+    # Tensorboard:
+    create_saving_folder()
+    writer = SummaryWriter(log_dir=args.logs_path)
+        
     main()
 
 

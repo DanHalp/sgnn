@@ -9,10 +9,15 @@ import plyfile
 import marching_cubes.marching_cubes as mc
 
 
-def get_train_files(data_path, file_list, val_file_list):
+def get_train_files(data_path, file_list, val_file_list, ext='__0__.sdf'):
+    """
+    TODO: Make code more generic - for each file name without '__0__.sdf', add it.
+    TODO: Currently it's just for .sdf files. 
+    
+    """
     names = open(file_list).read().splitlines()
     if not '.' in names[0]:
-        names = [name + '__0__.sdf' for name in names]
+        names = [name + ext for name in names]
     files = [os.path.join(data_path, f) for f in names]
     val_files = []
     if val_file_list:
@@ -61,6 +66,18 @@ def dense_to_sparse_np(grid, thresh):
 
 
 def load_train_file(file):
+    """
+    Loading point clouds.
+    1) The orginal work, with scannet uses .sfds files, that are read line by line (Couldn't find a proper way to view the contents.).
+    NOTE: The .sdfs files are binary files. Look at the "struct" library doc for reference of the letters: https://docs.python.org/3.7/library/struct.html
+    2) The nuScenes files are of .pcd format. They could be easily read with the open3d library.
+    """
+    # from pypcd import pypcd     
+    # temp = pypcd.PointCloud.from_path(file)
+    # import open3d
+    # temp = open3d.io.read_point_cloud(file)
+    # print(temp)
+    # exit()
     fin = open(file, 'rb')
     dimx = struct.unpack('Q', fin.read(8))[0]
     dimy = struct.unpack('Q', fin.read(8))[0]
@@ -68,14 +85,16 @@ def load_train_file(file):
     voxelsize = struct.unpack('f', fin.read(4))[0]
     world2grid = struct.unpack('f'*4*4, fin.read(4*4*4))
     world2grid = np.asarray(world2grid, dtype=np.float32).reshape([4, 4])
-    # input data
-    num = struct.unpack('Q', fin.read(8))[0]
-    input_locs = struct.unpack('I'*num*3, fin.read(num*3*4))
+    
+    # input data: read the point cloud and process them.
+    num = struct.unpack('Q', fin.read(8))[0]  # Num of points. 'Q' is unsigned long long - 8 bits
+    input_locs = struct.unpack('I'*num*3, fin.read(num*3*4)) # 'I' is 4 bits.
     input_locs = np.asarray(input_locs, dtype=np.int32).reshape([num, 3])
     input_locs = np.flip(input_locs,1).copy() # convert to zyx ordering
-    input_sdfs = struct.unpack('f'*num, fin.read(num*4))
+    input_sdfs = struct.unpack('f'*num, fin.read(num*4))  # 'f' is float, 4 bits.
     input_sdfs = np.asarray(input_sdfs, dtype=np.float32)
     input_sdfs /= voxelsize
+    
     # target data
     num = struct.unpack('Q', fin.read(8))[0]
     target_locs = struct.unpack('I'*num*3, fin.read(num*3*4))

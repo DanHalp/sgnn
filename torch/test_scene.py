@@ -3,6 +3,8 @@ from __future__ import print_function
 
 import argparse
 import os, sys
+from pathlib import Path
+import shutil
 import random
 import torch
 import numpy as np
@@ -12,6 +14,7 @@ import data_util
 import scene_dataloader
 import model
 import loss as loss_util
+from dvis import dvis
 
 # python test_scene.py --gpu 0 --input_data_path ./data/mp_sdf_vox_2cm_input --target_data_path ./data/mp_sdf_vox_2cm_target --test_file_list filelists/mp_rooms_1.txt --output output/mp
 
@@ -23,8 +26,9 @@ parser.add_argument('--gpu', type=int, default=0, help='which gpu to use')
 parser.add_argument('--input_data_path', required=True, help='path to input data')
 parser.add_argument('--target_data_path', required=True, help='path to target data')
 parser.add_argument('--test_file_list', required=True, help='path to file list of test data')
+parser.add_argument('--test_file', default=None, help='If only one test file is required')
 parser.add_argument('--model_path', required=True, help='path to model to test')
-parser.add_argument('--output', default='./output', help='folder to output predictions')
+parser.add_argument('--output', default='./output/meshes', help='folder to output predictions')
 # model params
 parser.add_argument('--num_hierarchy_levels', type=int, default=4, help='#hierarchy levels.')
 parser.add_argument('--max_input_height', type=int, default=128, help='max height in voxels')
@@ -43,6 +47,7 @@ parser.add_argument('--cpu', dest='cpu', action='store_true')
 
 
 parser.set_defaults(no_pass_occ=False, no_pass_feats=False, cpu=False)
+
 args = parser.parse_args()
 assert( not (args.no_pass_feats and args.no_pass_occ) )
 assert( args.num_hierarchy_levels > 1 )
@@ -53,7 +58,6 @@ print(args)
 os.environ['CUDA_VISIBLE_DEVICES']=str(args.gpu)
 UP_AXIS = 0 # z is 0th 
 
-
 # create model
 model = model.GenModel(args.encoder_dim, args.input_dim, args.input_nf, args.coarse_feat_dim, args.refine_feat_dim, args.num_hierarchy_levels, not args.no_pass_occ, not args.no_pass_feats, args.use_skip_sparse, args.use_skip_dense)
 if not args.cpu:
@@ -63,11 +67,21 @@ model.load_state_dict(checkpoint['state_dict'])
 print('loaded model:', args.model_path)
 
 
-def test(loss_weights, dataloader, output_vis, num_to_vis):
-    model.eval()
+def sdf_to_occ(x, thresh=2e-2):
+    """
+    # All voxels with a value lower than "thresh", are considered as surface.
+    # Thresh is set to 2cm.
+    """
 
+    indices = torch.abs(x) < thresh
+    x[indices] = 1
+    x[~indices] = 0
+
+
+def test(loss_weights, dataloader, output_vis, num_to_vis):
+    
+    model.eval()
     num_vis = 0
-    num_batches = len(dataloader)
     with torch.no_grad():
         for t, sample in enumerate(dataloader):
             inputs = sample['input']
@@ -79,12 +93,16 @@ def test(loss_weights, dataloader, output_vis, num_to_vis):
             try:
                 if not args.cpu:
                     inputs[1] = inputs[1].cuda()
-                output_sdf, output_occs = model(inputs, loss_weights)
-            except:
+                    sdf_to_occ(inputs[1], thresh=args.truncation)
+                output_sdf, output_occs = model(inputs, loss_weights, truncation=1)
+            except Exception as e:
+                print("##############################################################")
+                print("Exp Msg:", e)
                 print('exception at %s' % sample['name'])
                 gc.collect()
                 continue
-
+            # print(output_occs); exit()
+            
             # remove padding
             dims = sample['orig_dims'][0]
             mask = (output_sdf[0][:,0] < dims[0]) & (output_sdf[0][:,1] < dims[1]) & (output_sdf[0][:,2] < dims[2])
@@ -105,20 +123,34 @@ def test(loss_weights, dataloader, output_vis, num_to_vis):
 
 
 def main():
-    # data files
-    test_files, _ = data_util.get_train_files(args.input_data_path, args.test_file_list, '')
+    torch.cuda.empty_cache()
+    # Load the test files (The function loads both train/test and val)
+    test_files, _ = data_util.get_train_files(args.input_data_path, args.test_file_list, '', ".pcd") 
+    
+    # If only one test_file is needed
+    if args.test_file:
+        test_files = [args.test_file]
+        args.output = Path(args.output) / os.path.basename(args.test_file).split(".")[0]
+        if args.output.exists():
+            shutil.rmtree(args.output)
+            os.makedirs(args.output)
+            
     if len(test_files) > args.max_to_vis:
         test_files = test_files[:args.max_to_vis]
     else:
         args.max_to_vis = len(test_files)
+        
     random.seed(42)
     random.shuffle(test_files)
     print('#test files = ', len(test_files))
+    
+    
     test_dataset = scene_dataloader.SceneDataset(test_files, args.input_dim, args.truncation, args.num_hierarchy_levels, args.max_input_height, 0, args.target_data_path)
-    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=2, collate_fn=scene_dataloader.collate)
+    test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=1, collate_fn=scene_dataloader.collate)
 
     if os.path.exists(args.output):
-        raw_input('warning: output dir %s exists, press key to overwrite and continue' % args.output)
+        # input('warning: output dir %s exists, press key to overwrite and continue' % args.output)
+        pass
     if not os.path.exists(args.output):
         os.makedirs(args.output)
 

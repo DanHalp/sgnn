@@ -58,17 +58,36 @@ class SceneDataset(torch.utils.data.Dataset):
         return len(self.files)
     
     def __getitem__(self, idx):
+        """
+        Tensors are read from a sdfs file as numpy arrays, and converted to tensor.
+        # inputs: holds two arrays, first holds the (x,y,z) of each point in point cloud  and the other holds the values.
+        # targets: shape (128, 64, 64). TODO problem: inputs have 77460 objects, while targets is 524288.
+        # Dims: the dimension of the desired grid?
+        # world2grid: (4, 4), numbers are  0 <= x <= 687.6
+        # target_known: (128, 64, 64), numbers are in RGB format 0<=x<=255
+        # target_hierarchy: growing resolutoins by the power of 2 (16, 8, 8) --> (32, 16, 16)
+        
+        NOTE: They are padded with another dimension, so they could be conctatnated into a batch eventually, as this function
+        only loads one sample at a time.
+        """
         file = self.files[idx]
         name = None
+        
+        # is_chunks means whether the input is given in chunks! i.e. the scene is divided into smaller parts, because it is a 
+        # densed grid.
         if self.is_chunks:
             name = os.path.splitext(os.path.basename(file))[0]
-            
+            # inputs: holds two arrays, first holds the (x,y,z) of each point in point cloud  and the other holds the values.
+            # targets: shape (128, 64, 64). TODO problem: inputs have 77460 objects, while targets is 524288.
+            # Dims: the dimension of the desired grid?
+            # world2grid: (4, 4), this is the affine transformation matrix, from pointcloud to grid.
+            # target_known: (128, 64, 64), numbers are in RGB format 0<=x<=255
+            # target_hierarchy: growing resolutoins by the power of 2 (16, 8, 8) --> (32, 16, 16)
             inputs, targets, dims, world2grid, target_known, target_hierarchy = data_util.load_train_file(file)
         else:
             input_file = file[0]
             target_file = file[1]
             name = os.path.splitext(os.path.basename(input_file))[0]
-            
             inputs, dims, world2grid = data_util.load_scene(input_file)
             targets, dims, world2grid = data_util.load_scene(target_file)
             target_known = data_util.load_scene_known(os.path.splitext(target_file)[0] + '.knw')
@@ -99,12 +118,14 @@ class SceneDataset(torch.utils.data.Dataset):
             if self.num_hierarchy_levels < 4:
                 target_hierarchy = target_hierarchy[4-self.num_hierarchy_levels:]
 
+        # Take only voxels that are within a smaller distance to a surface point than self.truncation
         mask = np.abs(inputs[1]) < self.truncation
         input_locs = inputs[0][mask]
         input_vals = inputs[1][mask]
         inputs = [torch.from_numpy(input_locs).long(), torch.from_numpy(input_vals[:,np.newaxis]).float()]
 
-        targets = targets[np.newaxis,:]
+        
+        targets = targets[np.newaxis,:]  # These are done for creating a batch, to conctanate all of them together.
         targets = torch.from_numpy(targets)
         if target_hierarchy is not None:
             for h in range(len(target_hierarchy)):

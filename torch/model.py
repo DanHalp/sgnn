@@ -4,6 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Import the sparseconvnet package (TODO: How did they do it in the orginal work?)
+import sys
+sys.path.append('/home/halperin/sgnn/torch/SparseConvNet')
 import sparseconvnet as scn
 
 def count_num_model_params(model):
@@ -143,32 +146,35 @@ class TSDFEncoder(nn.Module):
         print('[TSDFEncoder] params decode dense', params_decodedense)
 
     def forward(self,x):
+        """
+        TODO: Some explenation what this returns!
+        """
         feats_sparse = []
         for k in range(len(self.process_sparse)):
             x, ft = self.process_sparse[k](x)
             if self.use_skip_sparse:
                 feats_sparse.extend(ft)
         
-        enc0 = self.encode_dense0(x)
+        enc0 = self.encode_dense0(x) # 3D dense convolutions, not a "dense" layer (FC).
         enc1 = self.encode_dense1(enc0)
         bottleneck = self.bottleneck_dense2(enc1)
         if self.use_skip_dense:
-            dec0 = self.decode_dense3(torch.cat([bottleneck, enc1], 1))
+            dec0 = self.decode_dense3(torch.cat([bottleneck, enc1], 1)) # Some kind of a skip connection
         else:
             dec0 = self.decode_dense3(bottleneck)
         if self.use_skip_dense:
-            x = self.decode_dense4(torch.cat([dec0, enc0], 1))
+            x = self.decode_dense4(torch.cat([dec0, enc0], 1)) # Some kind of a skip connection
         else:
             x = self.decode_dense4(dec0)
         x = self.final(x)
-        occ = self.occpred(x)
-        sdf = self.sdfpred(x)
-        out = torch.cat([occ, sdf],1)
+        occ = self.occpred(x) # This gives a feature map of depth 1. 
+        sdf = self.sdfpred(x) # This one also. 
+        out = torch.cat([occ, sdf],1) # This o
         return x, out, feats_sparse
 
 class Refinement(nn.Module):
     def __init__(self, nf_in, nf, pass_occ, pass_feats, max_data_size, truncation=3):
-        nn.Module.__init__(self)
+        nn.Module.__init__(self) # TODO: super.__init__()
         data_dim = 3
         self.pass_occ = pass_occ
         self.pass_feats = pass_feats
@@ -312,6 +318,7 @@ class GenModel(nn.Module):
                 nf_in += nf
             self.surfacepred = SurfacePrediction(nf_in, nf, nf_out, self.refine_sizes[-1])
             print('#params surfacepred', count_num_model_params(self.surfacepred))
+            
     def dense_coarse_to_sparse(self, coarse_feats, coarse_occ, truncation):
         nf = coarse_feats.shape[1]
         batch_size = coarse_feats.shape[0]
@@ -340,7 +347,7 @@ class GenModel(nn.Module):
         locs_to = x_to[0]
         if len(locs_from) == 0 or len(locs_to) == 0:
             return x_to
-        # python implementation here
+        # python implementation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
         locs_from = (locs_from[:,0] * spatial_size[1] * spatial_size[2] + locs_from[:,1] * spatial_size[2] + locs_from[:,2]) * batch_size + locs_from[:,3]
         locs_to = (locs_to[:,0] * spatial_size[1] * spatial_size[2] + locs_to[:,1] * spatial_size[2] + locs_to[:,2]) * batch_size + locs_to[:,3]
         indicator_from = torch.zeros(spatial_size[0]*spatial_size[1]*spatial_size[2]*batch_size, dtype=torch.long, device=locs_from.device)
@@ -368,7 +375,12 @@ class GenModel(nn.Module):
                 self.refinement[h].n0.spatial_size[k] = refine_max_dim[k]
             self.surfacepred.p0.spatial_size[k] = refine_max_dim[k]
 
-    def forward(self, x, loss_weights):
+    def forward(self, x, loss_weights, truncation=3):
+        """
+        loss_weights: An array that holds 1 for the relevent heirechy if the loss
+        is to be computed there. Otherwise, 0.
+        TODO: Uncomment all outputs appending
+        """
         outputs = []
         #print('[model] x', x[0].shape, x[1].shape, torch.max(x[0][:,0]).item(), torch.max(x[0][:,1]).item(), torch.max(x[0][:,2]).item())
         # encode
@@ -378,13 +390,14 @@ class GenModel(nn.Module):
             for k in range(len(feats_sparse)):
                 #print('[model] feats_sparse[%d]' % k, feats_sparse[k].spatial_size)
                 feats_sparse[k] = ([feats_sparse[k].metadata.getSpatialLocations(feats_sparse[k].spatial_size), scn.OutputLayer(3)(feats_sparse[k])], feats_sparse[k].spatial_size)
-        locs, feats, out = self.dense_coarse_to_sparse(x, out, truncation=3)
+        locs, feats, out = self.dense_coarse_to_sparse(x, out, truncation=truncation)
         outputs.append(out)
         #print('locs, feats', locs.shape, locs.type(), feats.shape, feats.type(), x.shape)
         #raw_input('sdflkj')
 
         x_sparse = [locs, feats]
         for h in range(len(self.refinement)):
+
             if loss_weights[h+1] > 0:
                 if self.use_skip_sparse:
                     x_sparse = self.concat_skip(feats_sparse[len(self.refinement)-h][0], x_sparse, feats_sparse[len(self.refinement)-h][1], batch_size)

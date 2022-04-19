@@ -7,28 +7,34 @@ import sparseconvnet as scn
 
 import data_util
 
+
 UNK_THRESH = 2
 #UNK_THRESH = 3
 
 UNK_ID = -1
 
 def compute_targets(target, hierarchy, num_hierarchy_levels, truncation, use_loss_masking, known):
+    """
+    This function prepares the targets for different tasks - which are yet to be clear. TODO: What is the purpose?
+    The architecutre calculates the loss at each hierarchy level.
+    What is the occs loss?
+    """
     assert(len(target.shape) == 5)
     target_for_occs = [None] * num_hierarchy_levels
     target_for_hier = [None] * num_hierarchy_levels
     target_for_sdf = data_util.preprocess_sdf_pt(target, truncation)
     known_mask = None
     target_for_hier[-1] = target.clone()
-    target_occ = (torch.abs(target_for_sdf) < truncation).float()
+    target_occ = (torch.abs(target_for_sdf) < truncation).float()  # Why not <=? That removes all places where the dis equals to trunction.
     if use_loss_masking:
-        target_occ[known >= UNK_THRESH] = UNK_ID
+        target_occ[known >= UNK_THRESH] = UNK_ID  # UNK --> Unknown
     target_for_occs[-1] = target_occ
 
-    factor = 2
+    # factor = 2 TODO: Remove?
     for h in range(num_hierarchy_levels-2,-1,-1):
         target_for_occs[h] = torch.nn.MaxPool3d(kernel_size=2)(target_for_occs[h+1])
         target_for_hier[h] = data_util.preprocess_sdf_pt(hierarchy[h], truncation)
-        factor *= 2
+        # factor *= 2 TODO: Remove?
     return target_for_sdf, target_for_occs, target_for_hier
 
 # note: weight_missing_geo must be > 1
