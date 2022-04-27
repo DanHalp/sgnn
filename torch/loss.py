@@ -13,7 +13,7 @@ UNK_THRESH = 2
 
 UNK_ID = -1
 
-def compute_targets(target, hierarchy, num_hierarchy_levels, truncation, use_loss_masking, known):
+def compute_targets(target, num_hierarchy_levels):
     """
     This function prepares the targets for different tasks - which are yet to be clear. TODO: What is the purpose?
     The architecutre calculates the loss at each hierarchy level.
@@ -21,21 +21,11 @@ def compute_targets(target, hierarchy, num_hierarchy_levels, truncation, use_los
     """
     assert(len(target.shape) == 5)
     target_for_occs = [None] * num_hierarchy_levels
-    target_for_hier = [None] * num_hierarchy_levels
-    target_for_sdf = data_util.preprocess_sdf_pt(target, truncation)
-    known_mask = None
-    target_for_hier[-1] = target.clone()
-    target_occ = (torch.abs(target_for_sdf) < truncation).float()  # Why not <=? That removes all places where the dis equals to trunction.
-    if use_loss_masking:
-        target_occ[known >= UNK_THRESH] = UNK_ID  # UNK --> Unknown
+    target_occ = target 
     target_for_occs[-1] = target_occ
-
-    # factor = 2 TODO: Remove?
     for h in range(num_hierarchy_levels-2,-1,-1):
         target_for_occs[h] = torch.nn.MaxPool3d(kernel_size=2)(target_for_occs[h+1])
-        target_for_hier[h] = data_util.preprocess_sdf_pt(hierarchy[h], truncation)
-        # factor *= 2 TODO: Remove?
-    return target_for_sdf, target_for_occs, target_for_hier
+    return target_for_occs
 
 # note: weight_missing_geo must be > 1
 def compute_weights_missing_geo(weight_missing_geo, input_locs, target_for_occs, truncation):
@@ -70,14 +60,14 @@ def compute_bce_sparse_dense(sparse_pred_locs, sparse_pred_vals, dense_tgts, wei
     flatlocs = sparse_pred_locs[:,3]*dims[0]*dims[1]*dims[2] + sparse_pred_locs[:,0]*dims[1]*dims[2] + sparse_pred_locs[:,1]*dims[2] + sparse_pred_locs[:,2]
     tgtvalues = dense_tgts.view(-1)[flatlocs]
     weight = None if weights is None else weights.view(-1)[flatlocs]
-    if use_loss_masking:
-        mask = tgtvalues != UNK_ID
-        tgtvalues = tgtvalues[mask]
-        predvalues = predvalues[mask]
-        if weight is not None:
-            weight = weight[mask]
-    else:
-        tgtvalues[tgtvalues == UNK_ID] = 0
+    # if use_loss_masking:
+    #     mask = tgtvalues != UNK_ID
+    #     tgtvalues = tgtvalues[mask]
+    #     predvalues = predvalues[mask]
+    #     if weight is not None:
+    #         weight = weight[mask]
+    # else:
+    #     tgtvalues[tgtvalues == UNK_ID] = 0
     if batched:
         loss = F.binary_cross_entropy_with_logits(predvalues, tgtvalues, weight=weight)
     else:
@@ -163,14 +153,15 @@ def compute_l1_predsurf_sparse_dense(sparse_pred_locs, sparse_pred_vals, dense_t
     return loss
 
 # hierarchical loss 
-def compute_loss(output_sdf, output_occs, target_for_sdf, target_for_occs, target_for_hier, loss_weights, truncation, use_log_transform=True, weight_missing_geo=1, input_locs=None, use_loss_masking=True, known=None, batched=True):
+def compute_loss(output_occs, target, target_for_occs, loss_weights, truncation,  weight_missing_geo=1, input_locs=None, use_loss_masking=True, batched=True):
     assert(len(output_occs) == len(target_for_occs))
-    batch_size = target_for_sdf.shape[0]
-    loss = 0.0 if batched else np.zeros(batch_size, dtype=np.float32)
+    batch_size = target.shape[0]
+    loss = 0.0
     losses = [] if batched else [[] for i in range(len(output_occs) + 1)]
     weights = [None] * len(target_for_occs)
     if weight_missing_geo > 1:
         weights = compute_weights_missing_geo(weight_missing_geo, input_locs, target_for_occs, truncation)
+        
     for h in range(len(output_occs)):
         if len(output_occs[h][0]) == 0 or loss_weights[h] == 0:
             if batched:
@@ -178,30 +169,14 @@ def compute_loss(output_sdf, output_occs, target_for_sdf, target_for_occs, targe
             else:
                 losses[h].extend([-1] * batch_size)
             continue
-        cur_loss_occ = compute_bce_sparse_dense(output_occs[h][0], output_occs[h][1][:,0], target_for_occs[h], weights[h], use_loss_masking, batched=batched)
-        cur_known = None if not use_loss_masking else (target_for_occs[h] == UNK_ID)*UNK_THRESH
-        cur_loss_sdf = compute_l1_predsurf_sparse_dense(output_occs[h][0], output_occs[h][1][:,1], target_for_hier[h], weights[h], use_log_transform, use_loss_masking, cur_known, batched=batched)
-        cur_loss = cur_loss_occ + cur_loss_sdf
+        cur_loss = compute_bce_sparse_dense(output_occs[h][0], output_occs[h][1][:,0], target_for_occs[h], weights[h], use_loss_masking, batched=batched)
+              
+        loss += loss_weights[h] * cur_loss
         if batched:
-            loss += loss_weights[h] * cur_loss
             losses.append(cur_loss.item())
         else:
-            loss += loss_weights[h] * cur_loss
             losses[h].extend(cur_loss)
-    # loss sdf
-    if len(output_sdf[0]) > 0 and loss_weights[-1] > 0:
-        cur_loss = compute_l1_predsurf_sparse_dense(output_sdf[0], output_sdf[1], target_for_sdf, weights[-1], use_log_transform, use_loss_masking, known, batched=batched)
-        if batched:
-            loss += loss_weights[-1] * cur_loss
-            losses.append(cur_loss.item())
-        else:
-            loss += loss_weights[-1] * cur_loss
-            losses[len(output_occs)].extend(cur_loss)
-    else:
-        if batched:
-            losses.append(-1)
-        else:
-            losses[len(output_occs)].extend([-1] * batch_size)
+            
     return loss, losses
 
 def compute_l1_tgtsurf_sparse_dense(sparse_pred_locs, sparse_pred_vals, dense_tgts, truncation, use_loss_masking, known, batched=True, thresh=None):

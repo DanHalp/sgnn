@@ -202,14 +202,8 @@ class Refinement(nn.Module):
         locs_next = locs.unsqueeze(1).repeat(1, 8, 1)
         locs_next[:,:,:data_dim] *= 2
         locs_next[:,:,:data_dim] += offsets
-        #print('locs', locs.shape, locs.type())
-        #print('locs_next', locs_next.shape, locs_next.type())
-        #print('locs_next.view(-1,4)[:20]', locs_next.view(-1,4)[:20])
         feats_next = feats.unsqueeze(1).repeat(1, 8, 1) # TODO: CUSTOM TRILERP HERE???
-        #print('feats', feats.shape, feats.type())
-        #print('feats_next', feats_next.shape, feats_next.type())
-        #print('feats_next.view(-1,feats.shape[-1])[:20,:5]', feats_next.view(-1,feats.shape[-1])[:20,:5])
-        #raw_input('sdlfkj')
+     
         return locs_next.view(-1, locs.shape[-1]), feats_next.view(-1, feats.shape[-1])
 
     def forward(self,x):
@@ -237,10 +231,6 @@ class Refinement(nn.Module):
         sdf = self.linearsdf(x)
         # mask out for next level processing
         mask = (nn.Sigmoid()(out) > 0.5).view(-1)
-        #print('x', x.type(), x.shape, torch.min(x).item(), torch.max(x).item())
-        #print('locs_unfilt', locs_unfilt.type(), locs_unfilt.shape, torch.min(locs_unfilt).item(), torch.max(locs_unfilt).item())
-        #print('out', out.type(), out.shape, torch.min(out).item(), torch.max(out).item())
-        #print('mask', mask.type(), mask.shape, torch.sum(mask).item())
         locs = locs_unfilt[mask]
         
         out = torch.cat([out, sdf],1)
@@ -262,12 +252,11 @@ class SurfacePrediction(nn.Module):
         self.p3 = scn.BatchNormReLU(nf*3)
         self.p4 = scn.OutputLayer(data_dim)
         self.linear = nn.Linear(nf*3, nf_out)
+        
     def forward(self,x):
         if len(x[0]) == 0:
             return [], []
-        #x=self.sparseModel(x)
-        #print('x(sparse)', x.shape)
-
+     
         x = self.p0(x)
         x = self.p1(x)
         x = self.p2(x)
@@ -392,39 +381,24 @@ class GenModel(nn.Module):
                 feats_sparse[k] = ([feats_sparse[k].metadata.getSpatialLocations(feats_sparse[k].spatial_size), scn.OutputLayer(3)(feats_sparse[k])], feats_sparse[k].spatial_size)
         locs, feats, out = self.dense_coarse_to_sparse(x, out, truncation=truncation)
         outputs.append(out)
-        #print('locs, feats', locs.shape, locs.type(), feats.shape, feats.type(), x.shape)
-        #raw_input('sdflkj')
-
+        
         x_sparse = [locs, feats]
         for h in range(len(self.refinement)):
 
             if loss_weights[h+1] > 0:
                 if self.use_skip_sparse:
                     x_sparse = self.concat_skip(feats_sparse[len(self.refinement)-h][0], x_sparse, feats_sparse[len(self.refinement)-h][1], batch_size)
-                #print('[model] refine(%d) x_sparse(input)' % h, x_sparse[0].shape, torch.min(x_sparse[0]).item(), torch.max(x_sparse[0]).item())
                 x_sparse, occ = self.refinement[h](x_sparse)
                 outputs.append(occ)
-                #print('[model] refine(%d) x_sparse' % h, x_sparse[0].shape, torch.min(x_sparse[0]).item(), torch.max(x_sparse[0]).item())
             else:
                 outputs.append([[],[]])
+                
         # surface prediction
         locs = x_sparse[0]
         if self.PRED_SURF and loss_weights[-1] > 0:
             if self.use_skip_sparse:
                 x_sparse = self.concat_skip(feats_sparse[0][0], x_sparse, feats_sparse[0][1], batch_size)
             x_sparse = self.surfacepred(x_sparse)
-            #print('[model] surfpred x_sparse', x_sparse.shape)
-            # #DEBUG SANITY - check batching same
-            # print('locs', locs.shape)
-            # print('x_sparse', x_sparse.shape)
-            # for b in [0,1,2]:
-            #     batchmask = locs[:,3] == b
-            #     batchlocs = locs[batchmask]
-            #     batchfeats = x_sparse[batchmask]
-            #     print('[%d] batchlocs' % b, batchlocs.shape, torch.min(batchlocs[:,:-1]).item(), torch.max(batchlocs[:,:-1]).item(), torch.sum(batchlocs[:,:-1]).item())
-            #     print('[%d] batchfeats' % b, batchfeats.shape, torch.min(batchfeats).item(), torch.max(batchfeats).item(), torch.sum(batchfeats).item())
-            # raw_input('sdlfkj')
-            # #DEBUG SANITY - check batching same
             return [locs, x_sparse], outputs
         return [[],[]], outputs
 

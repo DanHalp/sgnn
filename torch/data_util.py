@@ -202,18 +202,12 @@ def visualize_sparse_sdf_as_points(sdf_locs, sdf_vals, iso, output_file, transfo
 
 def visualize_occ_as_points(sdf, thresh, output_file, transform=None, thresh_max = float('inf')):
     # collect verts from sdf
-    verts = []
-    for z in range(sdf.shape[0]):
-        for y in range(sdf.shape[1]):
-            for x in range(sdf.shape[2]):
-                val = abs(sdf[z, y, x])
-                if val > thresh and val < thresh_max:
-                    verts.append(np.array([x, y, z]) + 0.5)  # center of voxel
+    verts = np.array(np.where(sdf.cpu().numpy() == 1)).T[:, ::-1] + 0.5
+    
     if len(verts) == 0:
         print('warning: no valid occ points for %s' % output_file)
         return
     #print('[visualize_occ_as_points]', output_file, len(verts))
-    verts = np.stack(verts)
     visualize_points(verts, output_file, transform)
 
 def visualize_sparse_locs_as_points(locs, output_file, transform=None):
@@ -266,7 +260,7 @@ def make_scale_transform(scale):
     return transform
 
 
-def save_predictions(output_path, names, inputs, target_for_sdf, target_for_occs, output_sdf, output_occs, world2grids, truncation, thresh=1):
+def save_predictions(output_path, names, inputs, target_for_sdf, target_for_occs, output_sdf, output_occs, world2grids, truncation, thresh=1, mode=0):
     if not os.path.isdir(output_path):
         os.makedirs(output_path)
     if output_occs is not None:
@@ -274,32 +268,39 @@ def save_predictions(output_path, names, inputs, target_for_sdf, target_for_occs
         factors = [1] * num_hierarchy_levels
         for h in range(num_hierarchy_levels-2, -1, -1):
             factors[h] = factors[h+1] * 2
-    dims = np.maximum(np.max(output_sdf[0][0],0), np.max(inputs[0],0))+1 if target_for_sdf is None else target_for_sdf.shape[2:]
-    isovalue = 0
-    trunc = truncation - 0.1
+    # dims = np.maximum(np.max(output_sdf[0][0],0), np.max(inputs[0],0))+1 if target_for_sdf is None else target_for_sdf.shape[2:]
+    # isovalue = 0
+    # trunc = truncation - 0.1
     ext = '.ply'
 
     for k in range(len(names)):
         name = names[k]
         mask = inputs[0][:,-1] == k
-        locs = inputs[0][mask]
-        feats = inputs[1][mask]
+        # locs = inputs[0][mask]
+        # feats = inputs[1][mask]
         
-        input = sparse_to_dense_np(locs[:,:-1], feats, dims[2], dims[1], dims[0], -float('inf'))
-        mc.marching_cubes(torch.from_numpy(input), None, isovalue=isovalue, truncation=trunc, thresh=10, output_filename=os.path.join(output_path, name + 'input-mesh' + ext))
+        # input = sparse_to_dense_np(locs[:,:-1], feats, dims[2], dims[1], dims[0], -float('inf'))
+        # mc.marching_cubes(torch.from_numpy(input), None, isovalue=isovalue, truncation=trunc, thresh=10, output_filename=os.path.join(output_path, name + 'input-mesh' + ext))
+       
+        # Occ inputs 
+        
+        
+        transform = make_scale_transform(factors[-1])
+        visualize_sparse_locs_as_points(inputs[0], os.path.join(output_path, name + 'input-' + ext), transform)
         if output_occs is not None:
             for h in range(num_hierarchy_levels):
                 transform = make_scale_transform(factors[h])
                 if target_for_occs is not None:
-                    visualize_occ_as_points(target_for_occs[h][k,0] == 1, 0.5, os.path.join(output_path, name + 'target-' + str(h) + ext), transform, thresh_max=1.5)
+                    visualize_occ_as_points((target_for_occs[h][k,0] == 1).float(), 0.5, os.path.join(output_path, name + 'target-' + str(h) + ext), transform, thresh_max=1.5)
                 if output_occs is not None and output_occs[h][k] is not None:
                     visualize_sparse_locs_as_points(output_occs[h][k], os.path.join(output_path, name + 'pred-' + str(h) + ext), transform)
-        if output_sdf[k] is not None:
-            locs = output_sdf[k][0][:,:3]
-            pred_sdf_dense = sparse_to_dense_np(locs, output_sdf[k][1][:,np.newaxis], dims[2], dims[1], dims[0], -float('inf'))
-            mc.marching_cubes(torch.from_numpy(pred_sdf_dense), None, isovalue=isovalue, truncation=trunc, thresh=10, output_filename=os.path.join(output_path, name + 'pred-mesh' + ext))
-        if target_for_sdf is not None:
-            target = target_for_sdf[k,0]
-            mc.marching_cubes(torch.from_numpy(target), None, isovalue=isovalue, truncation=trunc, thresh=10, output_filename=os.path.join(output_path, name + 'target-mesh' + ext))
+        
+        # if output_sdf[k] is not None:
+        #     locs = output_sdf[k][0][:,:3]
+        #     pred_sdf_dense = sparse_to_dense_np(locs, output_sdf[k][1][:,np.newaxis], dims[2], dims[1], dims[0], -float('inf'))
+        #     mc.marching_cubes(torch.from_numpy(pred_sdf_dense), None, isovalue=isovalue, truncation=trunc, thresh=10, output_filename=os.path.join(output_path, name + 'pred-mesh' + ext))
+        # if target_for_sdf is not None:
+        #     target = target_for_sdf[k,0]
+        #     mc.marching_cubes(torch.from_numpy(target), None, isovalue=isovalue, truncation=trunc, thresh=10, output_filename=os.path.join(output_path, name + 'target-mesh' + ext))
 
 

@@ -46,7 +46,7 @@ parser.add_argument('--max_to_vis', type=int, default=10, help='max num to vis')
 parser.add_argument('--cpu', dest='cpu', action='store_true')
 
 
-parser.set_defaults(no_pass_occ=False, no_pass_feats=False, cpu=False)
+parser.set_defaults(no_pass_occ=False, no_pass_feats=True, cpu=False)
 
 args = parser.parse_args()
 assert( not (args.no_pass_feats and args.no_pass_occ) )
@@ -67,16 +67,26 @@ model.load_state_dict(checkpoint['state_dict'])
 print('loaded model:', args.model_path)
 
 
-def sdf_to_occ(x, thresh=2e-2):
+OCC_ON = 1
+OCC_OFF = 0
+OCC_THRESH = 1.2
+
+def sdf_to_occ(x):
     """
     # All voxels with a value lower than "thresh", are considered as surface.
     # Thresh is set to 2cm.
     """
 
-    indices = torch.abs(x) < thresh
-    x[indices] = 1
-    x[~indices] = 0
+    indices = torch.abs(x) < OCC_THRESH
+    x[indices] = OCC_ON
+    x[~indices] = OCC_OFF
 
+def normalize_to_range(x, new_min=0, new_max=1):
+    """
+    Normalize a given arrays values to a new range
+    """
+    minx, maxx = x.min(), x.max()
+    return (x - minx) / (maxx - minx) * (new_max - new_min) + new_min
 
 def test(loss_weights, dataloader, output_vis, num_to_vis):
     
@@ -84,38 +94,42 @@ def test(loss_weights, dataloader, output_vis, num_to_vis):
     num_vis = 0
     with torch.no_grad():
         for t, sample in enumerate(dataloader):
+
             inputs = sample['input']
+            target = sample['sdf']
             input_dim = np.array(sample['sdf'].shape[2:])
             sys.stdout.write('\r[ %d | %d ] %s (%d, %d, %d)    ' % (num_vis, num_to_vis, sample['name'], input_dim[0], input_dim[1], input_dim[2]))
             sys.stdout.flush()
             hierarchy_factor = pow(2, args.num_hierarchy_levels-1)
             model.update_sizes(input_dim, input_dim // hierarchy_factor)
             try:
-                if not args.cpu:
+                if not args.cpu:                    
                     inputs[1] = inputs[1].cuda()
-                    sdf_to_occ(inputs[1], thresh=args.truncation)
-                output_sdf, output_occs = model(inputs, loss_weights, truncation=1)
+                sdf_to_occ(inputs[1])
+                _, output_occs = model(inputs, loss_weights, truncation=args.truncation)
+                _, target_for_occs, _ = loss_util.compute_targets(target.cuda(), None, args.num_hierarchy_levels, None, None, None)  # Todo, if works - change the function signiture
+                for h in target_for_occs:
+                    sdf_to_occ(h)
+                
             except Exception as e:
                 print("##############################################################")
                 print("Exp Msg:", e)
                 print('exception at %s' % sample['name'])
                 gc.collect()
                 continue
-            # print(output_occs); exit()
             
             # remove padding
             dims = sample['orig_dims'][0]
-            mask = (output_sdf[0][:,0] < dims[0]) & (output_sdf[0][:,1] < dims[1]) & (output_sdf[0][:,2] < dims[2])
-            output_sdf[0] = output_sdf[0][mask]
-            output_sdf[1] = output_sdf[1][mask]
             mask = (inputs[0][:,0] < dims[0]) & (inputs[0][:,1] < dims[1]) & (inputs[0][:,2] < dims[2])
             inputs[0] = inputs[0][mask]
             inputs[1] = inputs[1][mask]
-            vis_pred_sdf = [None]
-            if len(output_sdf[0]) > 0:
-                vis_pred_sdf[0] = [output_sdf[0].cpu().numpy(), output_sdf[1].squeeze().cpu().numpy()]
+            # if len(output_sdf[0]) > 0:
+            #     vis_pred_sdf[0] = [output_sdf[0].cpu().numpy(), output_sdf[1].squeeze().cpu().numpy()]
             inputs = [inputs[0].numpy(), inputs[1].cpu().numpy()]
-            data_util.save_predictions(output_vis, sample['name'], inputs, None, None, vis_pred_sdf, None, sample['world2grid'], args.truncation)
+            
+            sdf_to_occ(target)
+            target = target.cpu().numpy()
+            data_util.save_predictions(output_vis, sample['name'], inputs, None, target_for_occs, None, output_occs, sample['world2grid'], args.truncation)
             num_vis += 1
             if num_vis >= num_to_vis:
                 break
@@ -150,6 +164,7 @@ def main():
 
     if os.path.exists(args.output):
         # input('warning: output dir %s exists, press key to overwrite and continue' % args.output)
+        # shutil.rmtree(args.output)
         pass
     if not os.path.exists(args.output):
         os.makedirs(args.output)

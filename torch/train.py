@@ -61,7 +61,7 @@ parser.add_argument('--no_loss_masking', dest='use_loss_masking', action='store_
 parser.add_argument('--scheduler_step_size', type=int, default=0, help='#iters before scheduler step (0 for each epoch)')
 parser.add_argument("--logs_path", default="./output/tensorboard")
 parser.add_argument("--session_name", default="", help="Under what foler should stuff be saved?")
-parser.set_defaults(no_pass_occ=False, no_pass_feats=False, logweight_target_sdf=True, use_loss_masking=True)
+parser.set_defaults(no_pass_occ=False, no_pass_feats=True, logweight_target_sdf=True, use_loss_masking=True)
 args = parser.parse_args()
 assert( not (args.no_pass_feats and args.no_pass_occ) )
 assert( args.weight_missing_geo >= 1)
@@ -114,9 +114,13 @@ if len(val_files) > 0:
 
 _SPLITTER = ','
 
+OCC_ON = 1
+OCC_OFF = 0
+OCC_THRESH = 1.2
 
 
-def print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train_l1tgt, mean_train_ious, mean_val_losses, mean_val_l1pred, mean_val_l1tgt, mean_val_ious, time, log):
+
+def print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train_l1tgt, mean_train_ious, mean_val_losses, mean_val_l1pred, mean_val_l1tgt, mean_val_ious, time, loss_weights=None):
     splitters = []
     values = []
     values.extend(mean_train_losses)
@@ -125,8 +129,8 @@ def print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train
         id = 'sdf' if h + 1 == len(mean_train_losses) else id
         splitters.append('loss_train(' + id + ')')
      
-    values.extend([mean_train_l1pred, mean_train_l1tgt])
-    splitters.extend(['train_l1pred', 'train_l1tgt'])
+    # values.extend([mean_train_l1pred, mean_train_l1tgt])
+    # splitters.extend(['train_l1pred', 'train_l1tgt'])
     
     values.extend(mean_train_ious)
     for h in range(len(mean_train_ious)):
@@ -140,9 +144,9 @@ def print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train
             id = 'sdf' if h + 1 == len(mean_val_losses) else id
             splitters.append(f'loss_val({id})')
 
-        values.extend([mean_val_l1pred, mean_val_l1tgt])
+        # values.extend([mean_val_l1pred, mean_val_l1tgt])
         
-        splitters.extend(['val_l1pred', 'val_l1tgt'])
+        # splitters.extend(['val_l1pred', 'val_l1tgt'])
         
         values.extend(mean_val_ious)
         for h in range(len(mean_val_ious)):
@@ -154,12 +158,15 @@ def print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train
     splitters.append('time')
    
     print(f"\n################ Epoch {epoch}, Iter {iter} ################\n")
+    if loss_weights is not None:
+        print(f"loss_weights: {loss_weights}")
     for k in range(len(splitters)):
         if values[k] != -1:
             print(f"{splitters[k]}: {values[k]}")
             writer.add_scalar(f"train/{splitters[k]}", values[k], global_step=iter)
+    
 
-def print_log(log, epoch, iter, train_losses, train_l1preds, train_l1tgts, train_ious, val_losses, val_l1preds, val_l1tgts, val_ious, time):
+def print_log(log, epoch, iter, train_losses, train_l1preds, train_l1tgts, train_ious, val_losses, val_l1preds, val_l1tgts, val_ious, time, loss_weights=None):
     train_losses = np.array(train_losses)
     train_l1preds = np.array(train_l1preds)
     train_l1tgts = np.array(train_l1tgts)
@@ -188,46 +195,47 @@ def print_log(log, epoch, iter, train_losses, train_l1preds, train_l1tgts, train
         # print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train_l1tgt, mean_train_ious, None, None, None, None, time, log)
     log.flush()
     
+def get_loss_weights(weights, num_hier):
+    # weights = np.zeros(num_hierarchy_levels+1, dtype=np.float32)
+    weights[:num_hier] += 0.01
+    weights[weights > 1] = 1
+    
+    # cur_level = iter // num_iters_per_level
+    # if cur_level > num_hierarchy_levels:
+    #     weights.fill(1)
+    #     weights[-1] = factor_l1_loss
+    #     if iter == (num_hierarchy_levels + 1) * num_iters_per_level:
+    #         print('[iter %d] updating loss weights:' % iter, weights)
+    #     return weights
+    # for level in range(0, cur_level+1):
+    #     weights[level] = 1.0
+    # step_factor = 20
+    # fade_amount = max(1.0, min(100, num_iters_per_level//step_factor))
+    # fade_level = iter % num_iters_per_level
+    # cur_weight = 0.0
+    # l1_weight = 0.0
+    # if fade_level >= num_iters_per_level - fade_amount + step_factor:
+    #     fade_level_step = (fade_level - num_iters_per_level + fade_amount) // step_factor
+    #     cur_weight = float(fade_level_step) / float(fade_amount//step_factor)
+    # if cur_level+1 < num_hierarchy_levels:
+    #     weights[cur_level+1] = cur_weight
+    # elif cur_level < num_hierarchy_levels:
+    #     l1_weight = factor_l1_loss * cur_weight
+    # else:
+    #     l1_weight = 1.0
+    # weights[-1] = l1_weight
+    # if iter % num_iters_per_level == 0 or (fade_level >= num_iters_per_level - fade_amount + step_factor and (fade_level - num_iters_per_level + fade_amount) % step_factor == 0):
+    #     print('[iter %d] updating loss weights:' % iter, weights)
+    # return weights
 
-def get_loss_weights(iter, num_hierarchy_levels, num_iters_per_level, factor_l1_loss):
-    weights = np.zeros(num_hierarchy_levels+1, dtype=np.float32)
-    cur_level = iter // num_iters_per_level
-    if cur_level > num_hierarchy_levels:
-        weights.fill(1)
-        weights[-1] = factor_l1_loss
-        if iter == (num_hierarchy_levels + 1) * num_iters_per_level:
-            print('[iter %d] updating loss weights:' % iter, weights)
-        return weights
-    for level in range(0, cur_level+1):
-        weights[level] = 1.0
-    step_factor = 20
-    fade_amount = max(1.0, min(100, num_iters_per_level//step_factor))
-    fade_level = iter % num_iters_per_level
-    cur_weight = 0.0
-    l1_weight = 0.0
-    if fade_level >= num_iters_per_level - fade_amount + step_factor:
-        fade_level_step = (fade_level - num_iters_per_level + fade_amount) // step_factor
-        cur_weight = float(fade_level_step) / float(fade_amount//step_factor)
-    if cur_level+1 < num_hierarchy_levels:
-        weights[cur_level+1] = cur_weight
-    elif cur_level < num_hierarchy_levels:
-        l1_weight = factor_l1_loss * cur_weight
-    else:
-        l1_weight = 1.0
-    weights[-1] = l1_weight
-    if iter % num_iters_per_level == 0 or (fade_level >= num_iters_per_level - fade_amount + step_factor and (fade_level - num_iters_per_level + fade_amount) % step_factor == 0):
-        print('[iter %d] updating loss weights:' % iter, weights)
-    return weights
-
-def sdf_to_occ(x, thresh=args.truncation):
+def sdf_to_occ(x):
     """
-    # All voxels with a value lower than "thresh", are considered as surface
-    # Thresh is set to 2cm.
+    # All voxels with a value lower than "thresh", are considered as surface.
     """
 
-    indices = torch.abs(x) < thresh
-    x[indices] = 1
-    x[~indices] = 0
+    indices = torch.abs(x) < OCC_THRESH
+    x[indices] = OCC_ON
+    x[~indices] = OCC_OFF
     
 def create_saving_folder():
     
@@ -244,8 +252,11 @@ def create_saving_folder():
     
     session_name = f"{session_name}_epochs-{n_epoch}_trunc-{trunc}"
     path = path / session_name
+    
+    num = 1
     if path.exists():
-        shutil.rmtree(path)
+        num = len([dI for dI in os.listdir(path) if os.path.isdir(os.path.join(path, dI))]) + 1
+    path = path / str(num)
     os.makedirs(path)
         
     args.save = path
@@ -257,7 +268,7 @@ def create_saving_folder():
         os.makedirs(args.logs_path)
     
     
-def train(epoch, iter, dataloader, log_file, output_save):
+def train(epoch, iter, dataloader, log_file, output_save, loss_weights):
     
     
     train_losses = [ [] for i in range(args.num_hierarchy_levels+2) ]
@@ -271,14 +282,15 @@ def train(epoch, iter, dataloader, log_file, output_save):
     #     scheduler.step()
 
     num_batches = len(dataloader)
+    
     for t, sample in enumerate(dataloader):
         # TODO: Maybe these are what heirechy should we consider for the loss?????
-        loss_weights = get_loss_weights(iter, args.num_hierarchy_levels, args.num_iters_per_level, args.weight_sdf_loss)
+        get_loss_weights(loss_weights, args.num_hierarchy_levels)
         if epoch == args.start_epoch and t == 0:
-            print('[iter %d/epoch %d] loss_weights' % (iter, epoch), loss_weights)
+            print('[iter %d / epoch %d] loss_weights' % (iter, epoch), loss_weights)
 
-        sdfs = sample['sdf'] # These are the targets of the supervised learning.
-        if sdfs.shape[0] < args.batch_size:
+        target = sample['sdf'] # These are the targets of the supervised learning.
+        if target.shape[0] < args.batch_size:
             continue  # maintain same batch size for training - could be also implemented with "skip_last"
         inputs = sample['input']
         known = sample['known']
@@ -288,25 +300,27 @@ def train(epoch, iter, dataloader, log_file, output_save):
             hierarchy[h] = hierarchy[h].cuda()
         
         # Create an occupancy grid. 
-        sdf_to_occ(inputs[1], thresh=args.truncation)
-        sdf_to_occ(sdfs, args.truncation)
+        sdf_to_occ(inputs[1])
+        sdf_to_occ(target)
         for h in range(len(hierarchy)):
-            sdf_to_occ(hierarchy[h], args.truncation)
+            sdf_to_occ(hierarchy[h])
         
         if args.use_loss_masking:
             known = known.cuda()
             
         inputs[0] = inputs[0].cuda()
         inputs[1] = inputs[1].cuda()
-        
-        target_for_sdf, target_for_occs, target_for_hier = loss_util.compute_targets(sdfs.cuda(), hierarchy, args.num_hierarchy_levels, args.truncation, args.use_loss_masking, known)
+
+        target_for_occs = loss_util.compute_targets(target.cuda(), args.num_hierarchy_levels)
 
         optimizer.zero_grad()
-        output_sdf, output_occs = model(inputs, loss_weights)        
-        loss, losses = loss_util.compute_loss(output_sdf, output_occs, target_for_sdf, target_for_occs, target_for_hier, loss_weights, args.truncation, args.logweight_target_sdf, args.weight_missing_geo, inputs[0], args.use_loss_masking, known)
+        output_sdf, output_occs = model(inputs, loss_weights)
+        loss, losses = loss_util.compute_loss( output_occs, target, target_for_occs, loss_weights, args.truncation, args.weight_missing_geo, inputs[0], args.use_loss_masking)
         loss.backward()
         optimizer.step()
 
+        
+        # Calculate the IoU
         output_visual = output_save and t + 2 == num_batches
         compute_pred_occs = (iter % 20 == 0) or output_visual
         if compute_pred_occs:
@@ -322,6 +336,7 @@ def train(epoch, iter, dataloader, log_file, output_save):
                     locs = output_occs[h][0][batchmask][:,:-1]
                     vals = output_occs[h][1][batchmask]
                     pred_occs[h][b] = locs[vals.view(-1)]
+                    
         train_losses[0].append(loss.item())
         for h in range(args.num_hierarchy_levels):
             train_losses[h+1].append(losses[h])
@@ -332,31 +347,14 @@ def train(epoch, iter, dataloader, log_file, output_save):
         train_losses[args.num_hierarchy_levels+1].append(losses[-1])
         if len(output_sdf[0]) > 0:
             output_sdf = [output_sdf[0].detach(), output_sdf[1].detach()]
-        if loss_weights[-1] > 0 and iter % 20 == 0:
-            train_l1preds.append(loss_util.compute_l1_predsurf_sparse_dense(output_sdf[0], output_sdf[1], target_for_sdf, None, False, args.use_loss_masking, known).item())
-            train_l1tgts.append(loss_util.compute_l1_tgtsurf_sparse_dense(output_sdf[0], output_sdf[1], target_for_sdf, args.truncation, args.use_loss_masking, known))
-
         
         if args.scheduler_step_size > 0 and iter % args.scheduler_step_size == 0:
             scheduler.step()
-        if iter % 20 == 0:
+        if (iter + 1) % 20 == 0:
             took = time.time() - start
             print_log(log_file, epoch, iter, train_losses, train_l1preds, train_l1tgts, train_ious, None, None, None, None, took)
         if iter % 1000 == 0 and iter != 0:
             torch.save({'epoch': epoch,'state_dict': model.state_dict(), 'optimizer' : optimizer.state_dict()}, os.path.join(args.save, 'model-iter%s-epoch%s.pth' % (iter, epoch)))
-        # if output_visual:
-        #     vis_pred_sdf = [None] * args.batch_size
-        #     if len(output_sdf[0]) > 0:
-        #         for b in range(args.batch_size):
-        #             mask = output_sdf[0][:,-1] == b
-        #             if len(mask) > 0:
-        #                 vis_pred_sdf[b] = [output_sdf[0][mask].cpu().numpy(), output_sdf[1][mask].squeeze().cpu().numpy()]
-        #     inputs = [inputs[0].cpu().numpy(), inputs[1].cpu().numpy()]
-        #     for h in range(args.num_hierarchy_levels):
-        #         for b in range(args.batch_size):
-        #             if pred_occs[h][b] is not None:
-        #                 pred_occs[h][b] = pred_occs[h][b].cpu().numpy()
-        #     data_util.save_predictions(os.path.join(args.save, 'iter%d-epoch%d' % (iter, epoch), 'train'), sample['name'], inputs, target_for_sdf.cpu().numpy(), [x.cpu().numpy() for x in target_for_occs], vis_pred_sdf, pred_occs, sample['world2grid'].numpy(), args.vis_dfs, args.truncation)
         iter += 1
         
     return train_losses, train_l1preds, train_l1tgts, train_ious, iter, loss_weights
@@ -445,6 +443,9 @@ def main():
     # elif not _OVERFIT:
     #     input('warning: save dir %s exists, press key to delete and continue' % args.save)
 
+    args.occ_on = OCC_ON
+    args.occ_off = OCC_OFF
+    args.occ_thresh = OCC_THRESH
     data_util.dump_args_txt(args, os.path.join(args.save, 'args.txt'))
     log_file = open(os.path.join(args.save, 'log.csv'), 'w')
     headers = ['epoch','iter','train_loss(total)']
@@ -477,10 +478,13 @@ def main():
     print('starting training...')
     iter = args.start_epoch * (len(train_dataset) // args.batch_size) 
     # iter = iter if iter > 0 else 1
+    
+    loss_weights = np.zeros(args.num_hierarchy_levels + 1)
+    loss_weights[:args.num_hierarchy_levels] = np.linspace(0.3, 1, args.num_hierarchy_levels)
     for epoch in range(args.start_epoch, args.max_epoch):
         start = time.time()
 
-        train_losses, train_l1preds, train_l1tgts, train_ious, iter, loss_weights = train(epoch, iter, train_dataloader, log_file, output_save=(epoch % args.save_epoch == 0))
+        train_losses, train_l1preds, train_l1tgts, train_ious, iter, loss_weights = train(epoch, iter, train_dataloader, log_file, output_save=(epoch % args.save_epoch == 0), loss_weights=loss_weights)
         if has_val:
             val_losses, val_l1preds, val_l1tgts, val_ious = test(epoch, iter, loss_weights, val_dataloader, log_file_val, output_save=(epoch % args.save_epoch == 0))
 
@@ -488,8 +492,8 @@ def main():
         if has_val:
             print_log(log_file_val, epoch, iter, train_losses, train_l1preds, train_l1tgts, train_ious, val_losses, val_l1preds, val_l1tgts, val_ious, took)
         else:
-            print_log(log_file, epoch, iter, train_losses, train_l1preds, train_l1tgts, train_ious, None, None, None, None, took)
-        if epoch % args.save_epoch == 0:
+            print_log(log_file, epoch, iter, train_losses, train_l1preds, train_l1tgts, train_ious, None, None, None, None, took, loss_weights)
+        if epoch + 1 % args.save_epoch == 0:
             torch.save({'epoch': epoch + 1,'state_dict': model.state_dict(),'optimizer' : optimizer.state_dict()}, os.path.join(args.save, 'model-epoch-%s.pth' % epoch))
     log_file.close()
     if has_val:
