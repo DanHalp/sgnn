@@ -116,7 +116,7 @@ _SPLITTER = ','
 
 OCC_ON = 1
 OCC_OFF = 0
-OCC_THRESH = 1.2
+OCC_THRESH = args.truncation
 
 
 
@@ -151,8 +151,7 @@ def print_log_info(epoch, iter, mean_train_losses, mean_train_l1pred, mean_train
         values.extend(mean_val_ious)
         for h in range(len(mean_val_ious)):
             id = str(h)
-            if log is None:
-                splitters.append(f'iou_val({id})')
+            splitters.append(f'iou_val({id})')
                 
     values.append(time)
     splitters.append('time')

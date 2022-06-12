@@ -6,6 +6,7 @@ import torch.utils.data
 import random
 import math
 import plyfile
+# import open3d
 
 import data_util
 import marching_cubes as mc
@@ -113,7 +114,7 @@ class SceneDataset(torch.utils.data.Dataset):
             if target_known is not None:
                 known_pad = np.ones((max_input_dim[0], max_input_dim[1], max_input_dim[2]), dtype=np.uint8) * 255
                 known_pad[:min(self.max_input_height,target_known.shape[0]), :target_known.shape[1], :target_known.shape[2]] = target_known[:self.max_input_height, :, :]
-                target_known = known_pad
+                target_known = known_pad 
         else:
             if self.num_hierarchy_levels < 4:
                 target_hierarchy = target_hierarchy[4-self.num_hierarchy_levels:]
@@ -137,5 +138,90 @@ class SceneDataset(torch.utils.data.Dataset):
         return sample
 
 
+# class PointCloudDataset(torch.utils.data.Dataset):
+
+#     def __init__(self, files, input_dim, num_hierarchy_levels, max_input_height, num_overfit=0, target_path=''):
+#         assert(num_hierarchy_levels <= 4) # havent' precomputed more than this
+#         self.is_chunks = target_path == '' # have target path -> full scene data
+#         if not target_path:
+#             self.files = [f for f in files if os.path.isfile(f)]
+#         else:
+#             self.files = [(f,os.path.join(target_path, os.path.basename(f))) for f in files if (os.path.isfile(f) and os.path.isfile(os.path.join(target_path, os.path.basename(f))))]
+#         self.input_dim = input_dim
+#         self.num_hierarchy_levels = num_hierarchy_levels
+#         self.max_input_height = max_input_height
+#         self.UP_AXIS = 0
+#         if num_overfit > 0:
+#             num_repeat = max(1, num_overfit // len(self.files))
+#             self.files = self.files * num_repeat
+    
+#     def __len__(self):
+#         return len(self.files)
+    
+#     def __getitem__(self, idx):
+#         """
+#         Tensors are read from a sdfs file as numpy arrays, and converted to tensor.
+#         # inputs: holds two arrays, first holds the (x,y,z) of each point in point cloud  and the other holds the values.
+#         # targets: shape (128, 64, 64). TODO problem: inputs have 77460 objects, while targets is 524288.
+#         # Dims: the dimension of the desired grid?
+#         # world2grid: (4, 4), numbers are  0 <= x <= 687.6
+#         # target_known: (128, 64, 64), numbers are in RGB format 0<=x<=255
+#         # target_hierarchy: growing resolutoins by the power of 2 (16, 8, 8) --> (32, 16, 16)
+        
+#         NOTE: They are padded with another dimension, so they could be conctatnated into a batch eventually, as this function
+#         only loads one sample at a time.
+#         """
+#         file = self.files[idx]
+#         name = None
+        
+#         # is_chunks means whether the input is given in chunks! i.e. the scene is divided into smaller parts, because it is a 
+#         # densed grid.
+#         name = os.path.splitext(os.path.basename(file))[0]
+#         temp = pypcd.PointCloud.from_path(file)
+#         temp2 = open3d.io.read_point_cloud(file)
+#         print(temp)
+#         exit(0)
+        
+        # orig_dims = torch.LongTensor(targets.shape)
+        
+        #     # add padding
+        #     hierarchy_factor = pow(2, self.num_hierarchy_levels-1)
+        #     max_input_dim = np.array(targets.shape)
+        #     if self.max_input_height > 0 and max_input_dim[self.UP_AXIS] > self.max_input_height:
+        #         max_input_dim[self.UP_AXIS] = self.max_input_height
+        #         mask_input = inputs[0][:,self.UP_AXIS] < self.max_input_height
+        #         inputs[0] = inputs[0][mask_input]
+        #         inputs[1] = inputs[1][mask_input]
+        #     max_input_dim = ((max_input_dim + (hierarchy_factor*4) - 1) // (hierarchy_factor*4)) * (hierarchy_factor*4)
+        #     # pad target to max_input_dim
+        #     padded = np.zeros((max_input_dim[0], max_input_dim[1], max_input_dim[2]), dtype=np.float32)
+        #     padded.fill(-float('inf'))
+        #     padded[:min(self.max_input_height, targets.shape[0]), :targets.shape[1], :targets.shape[2]] = targets[:self.max_input_height, :, :]
+        #     targets = padded
+        #     if target_known is not None:
+        #         known_pad = np.ones((max_input_dim[0], max_input_dim[1], max_input_dim[2]), dtype=np.uint8) * 255
+        #         known_pad[:min(self.max_input_height,target_known.shape[0]), :target_known.shape[1], :target_known.shape[2]] = target_known[:self.max_input_height, :, :]
+        #         target_known = known_pad
+        # else:
+        #     if self.num_hierarchy_levels < 4:
+        #         target_hierarchy = target_hierarchy[4-self.num_hierarchy_levels:]
+
+        # # Take only voxels that are within a smaller distance to a surface point than self.truncation
+        # mask = np.abs(inputs[1]) < self.truncation
+        # input_locs = inputs[0][mask]
+        # input_vals = inputs[1][mask]
+        # inputs = [torch.from_numpy(input_locs).long(), torch.from_numpy(input_vals[:,np.newaxis]).float()]
+
+        
+        # targets = targets[np.newaxis,:]  # These are done for creating a batch, to conctanate all of them together.
+        # targets = torch.from_numpy(targets)
+        # if target_hierarchy is not None:
+        #     for h in range(len(target_hierarchy)):
+        #         target_hierarchy[h] = torch.from_numpy(target_hierarchy[h][np.newaxis,:])
+        # world2grid = torch.from_numpy(world2grid)
+        # target_known = target_known[np.newaxis,:]
+        # target_known = torch.from_numpy(target_known)
+        # sample = {'name': name, 'input': inputs, 'sdf': targets, 'world2grid': world2grid, 'known': target_known, 'hierarchy': target_hierarchy, 'orig_dims': orig_dims}
+        # return sample
 
 

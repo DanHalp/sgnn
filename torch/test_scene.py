@@ -69,7 +69,8 @@ print('loaded model:', args.model_path)
 
 OCC_ON = 1
 OCC_OFF = 0
-OCC_THRESH = 1.2
+OCC_THRESH = args.truncation
+
 
 def sdf_to_occ(x):
     """

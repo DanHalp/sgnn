@@ -210,7 +210,7 @@ def visualize_occ_as_points(sdf, thresh, output_file, transform=None, thresh_max
     #print('[visualize_occ_as_points]', output_file, len(verts))
     visualize_points(verts, output_file, transform)
 
-def visualize_sparse_locs_as_points(locs, output_file, transform=None):
+def visualize_sparse_locs_as_points(locs, output_file, transform=None, pcd=False):
     # collect verts from sdf
     verts = locs[:,:3]
     if len(verts) == 0:
@@ -218,7 +218,12 @@ def visualize_sparse_locs_as_points(locs, output_file, transform=None):
         return
     #print('[visualize_occ_as_points]', output_file, len(verts))
     verts = np.stack(verts).astype(np.float32)
-    verts = verts[:,::-1] + 0.5
+    
+    if not pcd:
+        verts = verts[:,::-1] + 0.5
+    else:
+        verts += [-40, 0, 0] # Move the center to be in the middle of MeshLab
+        
     visualize_points(verts, output_file, transform)
 
 def visualize_points(points, output_file, transform=None, colors=None):
