@@ -108,7 +108,7 @@ def test(loss_weights, dataloader, output_vis, num_to_vis):
                     inputs[1] = inputs[1].cuda()
                 sdf_to_occ(inputs[1])
                 _, output_occs = model(inputs, loss_weights, truncation=args.truncation)
-                _, target_for_occs, _ = loss_util.compute_targets(target.cuda(), None, args.num_hierarchy_levels, None, None, None)  # Todo, if works - change the function signiture
+                target_for_occs  = loss_util.compute_targets(target.cuda(), args.num_hierarchy_levels)  # Todo, if works - change the function signiture
                 for h in target_for_occs:
                     sdf_to_occ(h)
                 
